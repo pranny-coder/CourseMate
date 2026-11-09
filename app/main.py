@@ -42,7 +42,6 @@ def index():
 def health():
     """DB connectivity probe — always returns JSON with diagnostics."""
     import os
-    import ssl
     # Show masked URI so we can confirm env var is loaded
     uri = os.environ.get("MONGODB_URI", config.MONGODB_URI)
     if "@" in uri:
@@ -52,13 +51,8 @@ def health():
 
     try:
         from pymongo import MongoClient
-        # Force TLS 1.2 to avoid OpenSSL 3.x / Atlas handshake issue on Vercel Lambda
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        ctx.maximum_version = ssl.TLSVersion.TLSv1_2
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        client = MongoClient(uri, serverSelectionTimeoutMS=8000, ssl_context=ctx)
+        # tlsInsecure=True bypasses OpenSSL 3.x / Atlas TLS handshake issue on Vercel Lambda
+        client = MongoClient(uri, serverSelectionTimeoutMS=8000, tlsInsecure=True)
         info = client.admin.command("hello")
         primary = info.get("primary") or ("standalone" if info.get("isWritablePrimary") else "unknown")
         return {"ok": True, "primary": primary, "hosts": info.get("hosts", []), "uri": masked}
