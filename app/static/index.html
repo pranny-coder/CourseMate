@@ -300,12 +300,17 @@
     async function loadHealth() {
       try {
         const res = await fetch('/health');
-        if (res.ok) {
-          const data = await res.json();
-          const pill = document.getElementById('health-pill');
+        const data = await res.json();
+        const pill = document.getElementById('health-pill');
+        if (data.ok) {
           pill.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200";
           pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Primary: ${data.primary || 'Standalone'}`;
           document.getElementById('stat-primary').innerText = data.primary || 'Standalone';
+        } else {
+          pill.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200";
+          pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> DB Error: ${data.target}`;
+          pill.title = data.error;
+          document.getElementById('stat-primary').innerText = "DB Error";
         }
       } catch (e) {
         const pill = document.getElementById('health-pill');

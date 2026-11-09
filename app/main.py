@@ -32,9 +32,13 @@ def index():
 @app.get("/health")
 def health(db: Database = Depends(get_db)):
     """Shows replica-set state so failover is visible when a node is stopped."""
-    info = db.client.admin.command("hello")
-    primary = info.get("primary") or ("localhost (standalone)" if info.get("isWritablePrimary") else "unknown")
-    return {"ok": True, "primary": primary, "hosts": info.get("hosts", [])}
+    try:
+        info = db.client.admin.command("hello")
+        primary = info.get("primary") or ("localhost (standalone)" if info.get("isWritablePrimary") else "unknown")
+        return {"ok": True, "primary": primary, "hosts": info.get("hosts", [])}
+    except Exception as exc:
+        target = config.MONGODB_URI.split("@")[-1] if "@" in config.MONGODB_URI else config.MONGODB_URI
+        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)}", "target": target}
 
 
 # ---------- Courses (CRUD) ----------
