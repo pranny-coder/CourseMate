@@ -297,32 +297,39 @@
   <script>
     let courses = [];
 
-    async function loadHealth() {
+    // Safe JSON fetch — always returns {ok, data, error, status}
+    async function safeFetch(url, options = {}) {
       try {
-        const res = await fetch('/health');
-        const data = await res.json();
-        const pill = document.getElementById('health-pill');
-        if (data.ok) {
-          pill.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200";
-          pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Primary: ${data.primary || 'Standalone'}`;
-          document.getElementById('stat-primary').innerText = data.primary || 'Standalone';
-        } else {
-          pill.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200";
-          pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> DB Error: ${data.target}`;
-          pill.title = data.error;
-          document.getElementById('stat-primary').innerText = "DB Error";
-        }
+        const res = await fetch(url, options);
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); } catch { data = { detail: text }; }
+        return { ok: res.ok, status: res.status, data };
       } catch (e) {
-        const pill = document.getElementById('health-pill');
+        return { ok: false, status: 0, data: { detail: String(e) } };
+      }
+    }
+
+    async function loadHealth() {
+      const { ok, data } = await safeFetch('/health');
+      const pill = document.getElementById('health-pill');
+      if (data && data.ok) {
+        pill.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200";
+        pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-emerald-500"></span> Primary: ${data.primary || 'Standalone'}`;
+        document.getElementById('stat-primary').innerText = data.primary || 'Standalone';
+      } else {
+        const msg = data?.error || data?.detail || 'DB Offline';
         pill.className = "inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200";
         pill.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500"></span> DB Offline`;
+        pill.title = msg;
+        console.error('Health error:', msg, data?.uri);
       }
     }
 
     async function loadCourses() {
       try {
-        const res = await fetch('/courses');
-        courses = await res.json();
+        const { ok, data } = await safeFetch('/courses');
+        courses = ok && Array.isArray(data) ? data : [];
         
         // Populate dropdowns
         const filterSel = document.getElementById('course-select');
@@ -367,15 +374,24 @@
       btn.innerHTML = `<span>Searching...</span>`;
 
       try {
-        const res = await fetch('/ask', {
+        const { ok, data } = await safeFetch('/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ question, course_id: courseId })
         });
-        const data = await res.json();
 
         const container = document.getElementById('answer-container');
         container.classList.remove('hidden');
+
+        if (!ok) {
+          document.getElementById('answer-text').innerText = `Error: ${data.detail || 'Server error'}`;
+          document.getElementById('badge-retrieval').innerText = 'error';
+          document.getElementById('badge-mode').innerText = 'error';
+          document.getElementById('answer-latency').innerText = '';
+          document.getElementById('sources-list').innerHTML = '';
+          return;
+        }
+
         document.getElementById('answer-text').innerText = data.answer;
         document.getElementById('badge-retrieval').innerText = data.retrieval_mode;
         document.getElementById('badge-mode').innerText = data.answer_mode;

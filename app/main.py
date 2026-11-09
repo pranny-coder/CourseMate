@@ -1,12 +1,12 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
 
-from . import rag, services
+from . import config, rag, services
 from .db import get_db
 from .schemas import (AskIn, CourseIn, CourseUpdate, DocumentIn, DocumentUpdate,
                       UserIn)
@@ -14,6 +14,15 @@ from .static_html import HTML_CONTENT
 from .utils import oid, ser
 
 app = FastAPI(title="CourseMate", description="Course Q&A on MongoDB Atlas (RAG)")
+
+
+# --- Global exception handler: always return JSON, never plain-text 500 ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {str(exc)}"},
+    )
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
@@ -30,15 +39,28 @@ def index():
 
 
 @app.get("/health")
-def health(db: Database = Depends(get_db)):
-    """Shows replica-set state so failover is visible when a node is stopped."""
+def health():
+    """DB connectivity probe — always returns JSON with diagnostics."""
+    import os
+    # Show masked URI so we can confirm env var is loaded
+    uri = os.environ.get("MONGODB_URI", config.MONGODB_URI)
+    if "@" in uri:
+        masked = "mongodb+srv://***@" + uri.split("@", 1)[1]
+    else:
+        masked = uri
+
     try:
-        info = db.client.admin.command("hello")
-        primary = info.get("primary") or ("localhost (standalone)" if info.get("isWritablePrimary") else "unknown")
-        return {"ok": True, "primary": primary, "hosts": info.get("hosts", [])}
+        # Create a fresh client each time so we always get current env
+        from pymongo import MongoClient
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        info = client.admin.command("hello")
+        primary = info.get("primary") or ("standalone" if info.get("isWritablePrimary") else "unknown")
+        return {"ok": True, "primary": primary, "hosts": info.get("hosts", []), "uri": masked}
     except Exception as exc:
-        target = config.MONGODB_URI.split("@")[-1] if "@" in config.MONGODB_URI else config.MONGODB_URI
-        return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)}", "target": target}
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": f"{type(exc).__name__}: {str(exc)}", "uri": masked},
+        )
 
 
 # ---------- Courses (CRUD) ----------
@@ -159,10 +181,13 @@ def ask(body: AskIn, db: Database = Depends(get_db)):
     cid = oid(body.course_id) if body.course_id else None
     uid = oid(body.user_id) if body.user_id else None
 
-    t0 = datetime.now(timezone.utc)
-    (hits, retrieval_mode) = rag.retrieve(db, body.question, cid, body.k)
-    answer, answer_mode = rag.generate_answer(body.question, hits)
-    latency_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+    try:
+        t0 = datetime.now(timezone.utc)
+        (hits, retrieval_mode) = rag.retrieve(db, body.question, cid, body.k)
+        answer, answer_mode = rag.generate_answer(body.question, hits)
+        latency_ms = (datetime.now(timezone.utc) - t0).total_seconds() * 1000
+    except Exception as exc:
+        raise HTTPException(503, f"Retrieval failed: {type(exc).__name__}: {str(exc)}")
 
     titles = {
         d["_id"]: d["title"]
