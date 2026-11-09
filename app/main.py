@@ -10,18 +10,20 @@ from . import rag, services
 from .db import get_db
 from .schemas import (AskIn, CourseIn, CourseUpdate, DocumentIn, DocumentUpdate,
                       UserIn)
+from .static_html import HTML_CONTENT
 from .utils import oid, ser
 
 app = FastAPI(title="CourseMate", description="Course Q&A on MongoDB Atlas (RAG)")
 
-INDEX_HTML_PATH = Path(__file__).parent / "static" / "index.html"
-
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/api", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/api/", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/api/index", response_class=HTMLResponse, include_in_schema=False)
+@app.get("/api/index.py", response_class=HTMLResponse, include_in_schema=False)
 def index():
-    if INDEX_HTML_PATH.exists():
-        return HTMLResponse(content=INDEX_HTML_PATH.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>CourseMate API</h1><p>Visit <a href='/docs'>/docs</a></p>")
+    return HTMLResponse(content=HTML_CONTENT)
+
 
 # NOTE: endpoints are plain `def` on purpose. pymongo is blocking, so FastAPI runs
 # them in its threadpool and concurrent requests don't stall the event loop.
