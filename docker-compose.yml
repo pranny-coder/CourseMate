@@ -1,0 +1,45 @@
+# 3-node MongoDB replica set + API. Used to demo replication and failover locally.
+services:
+  mongo1: &mongo
+    image: mongo:7
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
+    volumes: ["mongo1-data:/data/db"]
+  mongo2:
+    <<: *mongo
+    volumes: ["mongo2-data:/data/db"]
+  mongo3:
+    <<: *mongo
+    volumes: ["mongo3-data:/data/db"]
+
+  mongo-init:
+    image: mongo:7
+    depends_on: [mongo1, mongo2, mongo3]
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - |
+        until mongosh --host mongo1 --quiet --eval "db.adminCommand('ping')"; do sleep 1; done
+        mongosh --host mongo1 --quiet --eval '
+          try { rs.status() } catch (e) {
+            rs.initiate({_id: "rs0", members: [
+              {_id: 0, host: "mongo1:27017", priority: 2},
+              {_id: 1, host: "mongo2:27017"},
+              {_id: 2, host: "mongo3:27017"}]})
+          }'
+
+  api:
+    build: .
+    depends_on: [mongo-init]
+    ports: ["8000:8000"]
+    environment:
+      MONGODB_URI: mongodb://mongo1:27017,mongo2:27017,mongo3:27017/?replicaSet=rs0
+      DB_NAME: coursemate
+      EMBEDDING_PROVIDER: hash
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    restart: on-failure
+
+volumes:
+  mongo1-data:
+  mongo2-data:
+  mongo3-data:

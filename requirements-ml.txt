@@ -1,0 +1,2 @@
+# Optional: real local embeddings (EMBEDDING_PROVIDER=local)
+sentence-transformers==3.3.1
