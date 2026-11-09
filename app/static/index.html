@@ -31,6 +31,9 @@
         <span id="health-pill" class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200">
           <span class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span> Connecting DB...
         </span>
+        <button onclick="promptAdminKey()" id="admin-key-btn" class="text-xs font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition flex items-center gap-1.5">
+          <span>🔑</span> <span id="admin-key-label">Admin Key</span>
+        </button>
         <a href="/docs" target="_blank" class="text-xs font-medium px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 transition">
           Swagger API ↗
         </a>
@@ -297,9 +300,36 @@
   <script>
     let courses = [];
 
+    function updateAdminKeyButton() {
+      const key = localStorage.getItem('coursemate_admin_key');
+      const label = document.getElementById('admin-key-label');
+      if (label) {
+        label.innerText = key ? 'Admin Key Set' : 'Admin Key';
+      }
+    }
+
+    function promptAdminKey() {
+      const current = localStorage.getItem('coursemate_admin_key') || '';
+      const entered = prompt('Enter Admin API Key for write operations (or leave blank to clear):', current);
+      if (entered !== null) {
+        if (entered.trim()) {
+          localStorage.setItem('coursemate_admin_key', entered.trim());
+        } else {
+          localStorage.removeItem('coursemate_admin_key');
+        }
+        updateAdminKeyButton();
+      }
+    }
+
     // Safe JSON fetch — always returns {ok, data, error, status}
     async function safeFetch(url, options = {}) {
       try {
+        const headers = Object.assign({}, options.headers || {});
+        const adminKey = localStorage.getItem('coursemate_admin_key');
+        if (adminKey && !headers['X-API-Key']) {
+          headers['X-API-Key'] = adminKey;
+        }
+        options.headers = headers;
         const res = await fetch(url, options);
         const text = await res.text();
         let data;
@@ -423,33 +453,36 @@
       e.preventDefault();
       const code = document.getElementById('new-course-code').value.trim();
       const name = document.getElementById('new-course-name').value.trim();
-      try {
-        const res = await fetch('/courses', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, name })
-        });
-        if (!res.ok) {
-          const err = await res.json();
-          alert(err.detail || "Error creating course");
-          return;
+      const { ok, status, data } = await safeFetch('/courses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, name })
+      });
+      if (!ok) {
+        if (status === 401) {
+          alert("401 Unauthorized: Admin API key required for write operations. Click the '🔑 Admin Key' button in the top bar to set your key.");
+        } else {
+          alert(data.detail || "Error creating course");
         }
-        document.getElementById('new-course-code').value = '';
-        document.getElementById('new-course-name').value = '';
-        await loadCourses();
-      } catch (err) {
-        alert("Error: " + err);
+        return;
       }
+      document.getElementById('new-course-code').value = '';
+      document.getElementById('new-course-name').value = '';
+      await loadCourses();
     }
 
     async function deleteCourse(id) {
       if (!confirm("Are you sure you want to delete this course?")) return;
-      try {
-        await fetch(`/courses/${id}`, { method: 'DELETE' });
-        await loadCourses();
-      } catch (err) {
-        alert("Error: " + err);
+      const { ok, status, data } = await safeFetch(`/courses/${id}`, { method: 'DELETE' });
+      if (!ok) {
+        if (status === 401) {
+          alert("401 Unauthorized: Admin API key required for write operations. Click the '🔑 Admin Key' button in the top bar to set your key.");
+        } else {
+          alert(data.detail || "Error deleting course");
+        }
+        return;
       }
+      await loadCourses();
     }
 
     async function handleIngestDoc(e) {
@@ -462,22 +495,25 @@
       btn.disabled = true;
       btn.innerText = "Chunking & Embedding...";
 
-      try {
-        const res = await fetch('/documents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ course_id, title, text })
-        });
-        const data = await res.json();
-        alert(`Document ingested successfully! Created ${data.chunk_count} vector chunks.`);
-        document.getElementById('doc-title').value = '';
-        document.getElementById('doc-text').value = '';
-      } catch (err) {
-        alert("Ingestion error: " + err);
-      } finally {
-        btn.disabled = false;
-        btn.innerText = "Chunk & Ingest into MongoDB";
+      const { ok, status, data } = await safeFetch('/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ course_id, title, text })
+      });
+      btn.disabled = false;
+      btn.innerText = "Chunk & Ingest into MongoDB";
+
+      if (!ok) {
+        if (status === 401) {
+          alert("401 Unauthorized: Admin API key required for write operations. Click the '🔑 Admin Key' button in the top bar to set your key.");
+        } else {
+          alert("Ingestion error: " + (data.detail || "Failed to ingest document"));
+        }
+        return;
       }
+      alert(`Document ingested successfully! Created ${data.chunk_count} vector chunks.`);
+      document.getElementById('doc-title').value = '';
+      document.getElementById('doc-text').value = '';
     }
 
     async function loadAnalytics() {
@@ -550,6 +586,7 @@
     }
 
     // Init
+    updateAdminKeyButton();
     loadHealth();
     loadCourses();
   </script>

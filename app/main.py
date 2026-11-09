@@ -1,7 +1,10 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import time
+from collections import defaultdict
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+import certifi
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError
@@ -14,6 +17,55 @@ from .static_html import HTML_CONTENT
 from .utils import oid, ser
 
 app = FastAPI(title="CourseMate", description="Course Q&A on MongoDB Atlas (RAG)")
+
+
+# --- Rate Limiting for /ask (sliding window per client IP) ---
+_ask_rate_limits: dict[str, list[float]] = defaultdict(list)
+
+
+def get_client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def check_ask_rate_limit(request: Request):
+    if config.ASK_RATE_LIMIT_MAX <= 0:
+        return
+    ip = get_client_ip(request)
+    now = time.time()
+    cutoff = now - config.ASK_RATE_LIMIT_WINDOW
+    active = [t for t in _ask_rate_limits[ip] if t > cutoff]
+    if len(active) >= config.ASK_RATE_LIMIT_MAX:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded: max {config.ASK_RATE_LIMIT_MAX} queries per {config.ASK_RATE_LIMIT_WINDOW}s per IP.",
+        )
+    active.append(now)
+    _ask_rate_limits[ip] = active
+
+
+# --- Authorization for Write Endpoints ---
+def verify_admin_key(
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+    authorization: str | None = Header(None, alias="Authorization"),
+):
+    if not config.ADMIN_API_KEY:
+        # If no key configured (local dev/default tests), allow writes
+        return True
+    provided = x_api_key
+    if not provided and authorization:
+        if authorization.lower().startswith("bearer "):
+            provided = authorization.split(" ", 1)[1].strip()
+        else:
+            provided = authorization.strip()
+    if not provided or provided != config.ADMIN_API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: Valid admin API key required (X-API-Key header).",
+        )
+    return True
 
 
 # --- Global exception handler: always return JSON, never plain-text 500 ---
@@ -51,8 +103,11 @@ def health():
 
     try:
         from pymongo import MongoClient
-        # tlsInsecure=True bypasses OpenSSL 3.x / Atlas TLS handshake issue on Vercel Lambda
-        client = MongoClient(uri, serverSelectionTimeoutMS=8000, tlsInsecure=True)
+        is_atlas = "mongodb.net" in uri or uri.startswith("mongodb+srv://")
+        kwargs = {"serverSelectionTimeoutMS": 8000}
+        if is_atlas:
+            kwargs["tlsCAFile"] = certifi.where()
+        client = MongoClient(uri, **kwargs)
         info = client.admin.command("hello")
         primary = info.get("primary") or ("standalone" if info.get("isWritablePrimary") else "unknown")
         return {"ok": True, "primary": primary, "hosts": info.get("hosts", []), "uri": masked}
@@ -64,7 +119,7 @@ def health():
 
 
 # ---------- Courses (CRUD) ----------
-@app.post("/courses", status_code=201)
+@app.post("/courses", status_code=201, dependencies=[Depends(verify_admin_key)])
 def create_course(body: CourseIn, db: Database = Depends(get_db)):
     doc = {**body.model_dump(), "created_at": services.now()}
     try:
@@ -87,7 +142,7 @@ def get_course(course_id: str, db: Database = Depends(get_db)):
     return ser(c)
 
 
-@app.patch("/courses/{course_id}")
+@app.patch("/courses/{course_id}", dependencies=[Depends(verify_admin_key)])
 def update_course(course_id: str, body: CourseUpdate, db: Database = Depends(get_db)):
     changes = body.model_dump(exclude_none=True)
     if not changes:
@@ -100,7 +155,7 @@ def update_course(course_id: str, body: CourseUpdate, db: Database = Depends(get
     return ser(c)
 
 
-@app.delete("/courses/{course_id}", status_code=204)
+@app.delete("/courses/{course_id}", status_code=204, dependencies=[Depends(verify_admin_key)])
 def delete_course(course_id: str, db: Database = Depends(get_db)):
     cid = oid(course_id)
     if not db.courses.delete_one({"_id": cid}).deleted_count:
@@ -110,7 +165,7 @@ def delete_course(course_id: str, db: Database = Depends(get_db)):
 
 
 # ---------- Users ----------
-@app.post("/users", status_code=201)
+@app.post("/users", status_code=201, dependencies=[Depends(verify_admin_key)])
 def create_user(body: UserIn, db: Database = Depends(get_db)):
     doc = {**body.model_dump(), "created_at": services.now()}
     try:
@@ -121,7 +176,7 @@ def create_user(body: UserIn, db: Database = Depends(get_db)):
 
 
 # ---------- Documents (CRUD + ingestion) ----------
-@app.post("/documents", status_code=201)
+@app.post("/documents", status_code=201, dependencies=[Depends(verify_admin_key)])
 def create_document(body: DocumentIn, db: Database = Depends(get_db)):
     cid = oid(body.course_id)
     if not db.courses.find_one({"_id": cid}, {"_id": 1}):
@@ -156,7 +211,7 @@ def get_document(doc_id: str, db: Database = Depends(get_db)):
     return ser(d)
 
 
-@app.patch("/documents/{doc_id}")
+@app.patch("/documents/{doc_id}", dependencies=[Depends(verify_admin_key)])
 def update_document(doc_id: str, body: DocumentUpdate, db: Database = Depends(get_db)):
     changes = body.model_dump(exclude_none=True)
     if not changes:
@@ -169,14 +224,14 @@ def update_document(doc_id: str, body: DocumentUpdate, db: Database = Depends(ge
     return ser(d)
 
 
-@app.delete("/documents/{doc_id}", status_code=204)
+@app.delete("/documents/{doc_id}", status_code=204, dependencies=[Depends(verify_admin_key)])
 def delete_document(doc_id: str, db: Database = Depends(get_db)):
     if not services.delete_document(db, oid(doc_id)):
         raise HTTPException(404, "Document not found")
 
 
 # ---------- RAG ----------
-@app.post("/ask")
+@app.post("/ask", dependencies=[Depends(check_ask_rate_limit)])
 def ask(body: AskIn, db: Database = Depends(get_db)):
     cid = oid(body.course_id) if body.course_id else None
     uid = oid(body.user_id) if body.user_id else None

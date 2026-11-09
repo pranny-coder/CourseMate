@@ -18,3 +18,8 @@ CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "20"))
 TOP_K = int(os.getenv("TOP_K", "5"))
 
 VECTOR_INDEX_NAME = "chunk_vector_index"
+
+# Security & Governance
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+ASK_RATE_LIMIT_MAX = int(os.getenv("ASK_RATE_LIMIT_MAX", "20"))  # max questions per window
+ASK_RATE_LIMIT_WINDOW = int(os.getenv("ASK_RATE_LIMIT_WINDOW", "60"))  # window in seconds

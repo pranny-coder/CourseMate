@@ -106,3 +106,54 @@ def test_analytics_after_queries(client):
     assert stats[0]["course_code"] == "CS F212" and stats[0]["queries"] == 2
     top = c.get("/analytics/top-documents").json()
     assert top[0]["title"] == "Indexes"
+
+
+def test_write_protection_with_admin_api_key(client, monkeypatch):
+    c, _ = client
+    monkeypatch.setattr("app.config.ADMIN_API_KEY", "super-secret-key")
+
+    # Unauthenticated write attempts must return 401
+    assert c.post("/courses", json={"code": "CS999", "name": "Protected"}).status_code == 401
+    assert c.post("/users", json={"email": "hacker@test.com", "name": "H"}).status_code == 401
+
+    # Authenticated write with X-API-Key header succeeds
+    res = c.post(
+        "/courses",
+        json={"code": "CS999", "name": "Protected"},
+        headers={"X-API-Key": "super-secret-key"},
+    )
+    assert res.status_code == 201
+    cid = res.json()["id"]
+
+    # Authenticated update with Authorization Bearer header succeeds
+    res_patch = c.patch(
+        f"/courses/{cid}",
+        json={"name": "Updated Protected"},
+        headers={"Authorization": "Bearer super-secret-key"},
+    )
+    assert res_patch.status_code == 200
+
+    # Unauthenticated delete fails
+    assert c.delete(f"/courses/{cid}").status_code == 401
+    # Authenticated delete succeeds
+    assert c.delete(f"/courses/{cid}", headers={"X-API-Key": "super-secret-key"}).status_code == 204
+
+
+def test_ask_rate_limiting(client, monkeypatch):
+    from app.main import _ask_rate_limits
+    _ask_rate_limits.clear()
+
+    c, _ = client
+    # Set limit to 3 queries per 60s
+    monkeypatch.setattr("app.config.ASK_RATE_LIMIT_MAX", 3)
+    monkeypatch.setattr("app.config.ASK_RATE_LIMIT_WINDOW", 60)
+
+    # First 3 succeed
+    for _ in range(3):
+        res = c.post("/ask", json={"question": "test question", "k": 1})
+        assert res.status_code == 200
+
+    # 4th request from same IP hits 429
+    res_blocked = c.post("/ask", json={"question": "test question 4", "k": 1})
+    assert res_blocked.status_code == 429
+    assert "Rate limit exceeded" in res_blocked.json()["detail"]

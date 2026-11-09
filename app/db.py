@@ -1,3 +1,4 @@
+import certifi
 from pymongo import MongoClient
 from pymongo.database import Database
 
@@ -13,7 +14,7 @@ def _make_client() -> MongoClient:
         return MongoClient(
             uri,
             serverSelectionTimeoutMS=8000,
-            tlsInsecure=True,          # bypass OpenSSL 3.x / Atlas TLS handshake issue on Vercel
+            tlsCAFile=certifi.where(),
         )
     return MongoClient(uri, serverSelectionTimeoutMS=5000)
 
