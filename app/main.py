@@ -52,7 +52,7 @@ def health():
     try:
         # Create a fresh client each time so we always get current env
         from pymongo import MongoClient
-        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        import certifi; client = MongoClient(uri, serverSelectionTimeoutMS=5000, tlsCAFile=certifi.where())
         info = client.admin.command("hello")
         primary = info.get("primary") or ("standalone" if info.get("isWritablePrimary") else "unknown")
         return {"ok": True, "primary": primary, "hosts": info.get("hosts", []), "uri": masked}
